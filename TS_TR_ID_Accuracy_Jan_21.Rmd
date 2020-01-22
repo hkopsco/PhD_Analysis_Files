@@ -1,0 +1,1013 @@
+---
+title: "TickSpotters_Photo_Accuracy_Analysis"
+author: "Kopsco"
+date: "1/21/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Desktop/PhD/Committee and Program Documents/Dissertation Files/TickSpotters Data/TS_TR Accuracy Analysis/TR TS Comparison Final R Files")
+```
+
+```{r include=FALSE}
+#Load libraries and data
+library(readr)
+library(dplyr)
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(RColorBrewer)
+library(lubridate)
+library(cvTools)
+library(aod)
+library(lmtest)
+library(lme4)
+library(pscl)
+library(survey)
+library(ROCR)
+library(pROC)
+library(boot)
+library(ResourceSelection)
+library(vcd)
+library(e1071)
+library(cowplot) #save_plot function
+
+matched <- read_csv("TR_TS_overall_sens_spec_updatedNov2019.csv") #List of TickReport submissions that matched TickSpotters reports
+TS_full <- read_csv("TS_2014_2017.csv") #Full TickSpotters data set
+TR_TS_all_v1 <- merge(matched, TS_full, by="TickSpotters_ID", all.x = TRUE) #Merging matches TickReport data with full TickSpotters data
+
+write.csv(TR_TS_all_v1, "~/Desktop/PhD/Committee and Program Documents/Dissertation Files/TickSpotters Data/TS_TR Accuracy Analysis/TR TS Comparison Final R Files/TR_TS_matched_w_TS_data.csv") #Exporing the merged csv 
+
+TR_TS_final <- TR_TS_all_v1 #renaming the merged file
+
+Aa_data <- read_csv("Aa_data_updatedDec2019.csv") #csv with A. americanum count out of total ticks
+                    
+Iscap_data <- read_csv("Iscap_data_updatedDec2019.csv") #csv with I. scapularis count out of total ticks
+
+Dv_data <-read_csv("Dv_data_updatedDec2019.csv")  #csv with Dermacentor count out of total ticks
+```
+
+```{r echo=FALSE}
+#Pie charts depicting the relative tick species contribution to the overall submission pool for both TickReport and TickSpotters during the period from which the overlapping sample was taken.
+
+library(plotly)
+library(ggpubr)
+library(ggplotify)
+
+Tickreport <-  data.frame(
+ group = c("Ixodes spp.", "Dermacentor spp.", "Amblyomma spp.", "Other "),
+  value = c(74.7, 14.5, 9.7, 1.1))
+
+Tickspotters <-data.frame(
+  group = c("Ixodes spp.", "Dermacentor spp.", "Amblyomma spp.", "Rhipicephalus spp.", "Other "),
+  value = c (34.8, 34.8, 17.0, 2.3, 11.1))
+
+tr_labs <- paste0(Tickreport$group, " (", Tickreport$value, "%)")
+ts_labs <- paste0(Tickspotters$group, " (", Tickspotters$value, "%)")
+
+Tickreport_pie <- plot_ly(Tickreport, labels = ~group, values = ~value, type = 'pie', textposition = 'outside',textinfo = 'label+percent') %>%
+  layout(xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+         yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE))
+Tickreport_pie
+
+Tickspotters_pie <- plot_ly(Tickspotters, labels = ~group, values = ~value, type = 'pie', textposition = 'outside',textinfo = 'label+percent') %>%
+  layout(xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+         yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE))
+Tickspotters_pie
+
+#Overlapping Sample
+
+Sample_count <- TR_TS_final %>%
+  group_by(TR_Species_ID) %>%
+  count(TR_Species_ID)
+
+combined_pie <- plot_ly(Sample_count, labels = ~TR_Species_ID, values = ~n, type = 'pie', textposition = 'outside',textinfo = 'label+percent') %>%
+  layout(xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+         yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE))
+combined_pie
+```
+
+```{r echo=FALSE}
+# State/Species Distribution of Overlapping Sample
+
+TR_TS_final$State <- factor(TR_TS_final$State, levels = c("MA","NY","PA", "RI", "NJ", "MD","CT", "VA", "ME", "WI", "CA", "NH", "VT", "IL", "OH", "NC", "IN", "FL", "MI", "GA", "MN", "WV", "MO", "AL", "DE", "OR", "TN", "TX", "CO", "WA", "KY", "LA", "MT","OK", "NE", "KS", "DC", "ID"))
+
+Submission_state <- filter(TR_TS_final, !is.na(State)) %>%
+   ggplot() + geom_bar(aes(x = State, fill=TR_Species_ID)) +
+   xlab("Submission States") +
+   ylab("Number of Submissions") +
+  scale_colour_hue(h = c(0, 360) + 15, c = 100, l = 65,
+  h.start = 0, direction = 1, na.value = "grey50",
+  aesthetics = "colour") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 70, hjust = 0.5, vjust = 0.5)) +
+  scale_fill_discrete (name = "Tick Species")
+Submission_state
+
+prop.state <- table(TR_TS_final$State)
+prop.table(prop.state)
+```
+
+```{r echo=FALSE}
+# Species and stage distribution for matched sample
+
+TR_TS_final$TR_Species_ID <- factor(TR_TS_final$TR_Species_ID, levels = c("Ixodes scapularis", "Dermacentor variabilis", "Amblyomma americanum", "Ixodes pacificus", "Dermacentor andersoni", "Dermacentor spp.", "Ixodes spp.", "Amblyomma spp.", "Rhipicephalus sanguineus", "Other (tick)"))
+TR_TS_final$Corrected_Stage_ID <-factor(TR_TS_final$Corrected_Stage_ID, levels = c("Adult", "Nymph", "Larva", "Unknown"))
+
+summary(TR_TS_final$TR_Species_ID)
+species.table <- table(TR_TS_final$TR_Species_ID)
+prop.table(species.table)
+
+Species_submitted <- filter(TR_TS_final, !is.na(TR_Species_ID)) %>%
+   ggplot() + geom_bar(aes(x = TR_Species_ID, fill=TR_Species_ID)) +
+   xlab("Tick Species Submitted to both TickReport and TickSpotters") +
+   ylab("Number of Submissions") +
+  scale_colour_hue(h = c(0, 360) + 15, c = 100, l = 65,
+  h.start = 0, direction = 1, na.value = "grey50",
+  aesthetics = "colour") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 70, hjust = 0.5, vjust = 0.5)) +
+  scale_fill_discrete (name = "Tick Species Identified")
+
+Species_submitted
+ggsave("TR_TS_species_submitted.png", plot = Species_submitted,
+  scale = 1, width = 9, height = 6,
+  dpi = 300, limitsize = TRUE)
+
+prop.stage <-table(TR_TS_final$Corrected_Stage_ID)
+prop.table(prop.stage)
+
+Species_submitted_by_stage <- filter(TR_TS_final, !is.na(TR_Species_ID)) %>%
+   ggplot() + geom_bar(aes(x = TR_Species_ID, fill= Corrected_Stage_ID)) +
+   xlab("Tick Species Submitted to both TickReport and TickSpotters") +
+   ylab("Number of Submissions") +
+  scale_colour_hue(h = c(0, 360) + 15, c = 100, l = 65,
+  h.start = 0, direction = 1, na.value = "grey50",
+  aesthetics = "colour") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 70, hjust = 0.5, vjust = 0.5)) +
+  scale_fill_discrete (name = "Tick Stages Identified", na.translate=FALSE)
+Species_submitted_by_stage
+
+ggsave("TR_TS_species_submitted_by_stage.png", plot = Species_submitted_by_stage,
+  scale = 1, width = 9, height = 6,
+  dpi = 300, limitsize = TRUE)
+
+Stages_submitted <- filter(TR_TS_final, !is.na(Corrected_Stage_ID)) %>%
+   ggplot() + geom_bar(aes(x = Corrected_Stage_ID, fill=TR_Species_ID)) +
+   xlab("Tick Stages Submitted to both TickReport and TickSpotters") +
+   ylab("Number of Submissions") +
+  scale_colour_hue(h = c(0, 360) + 15, c = 100, l = 65,
+  h.start = 0, direction = 1, na.value = "grey50",
+  aesthetics = "colour") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 70, hjust = 0.5, vjust = 0.5)) +
+  scale_fill_discrete (name = "Tick Species Identified")
+Stages_submitted
+
+ggsave("TR_TS_stages_submitted.png", plot = Stages_submitted,
+  scale = 1, width = 9, height = 6,
+  dpi = 300, limitsize = TRUE)
+```
+
+```{r echo=FALSE}
+# Engorgement distribution
+TR_TS_final$Feeding_time_days <- as.numeric(TR_TS_final$Feeding_time_days)
+summary(TR_TS_final$`Feeding-time_days`)
+
+TR_TS_final$Feeding_time_days <- factor(TR_TS_final$Feeding_time_days)
+
+Engorgement <- filter(TR_TS_final, !is.na(Feeding_time_days)) %>%
+   ggplot() + geom_bar(aes(x = Feeding_time_days, fill=Feeding_time_days)) +
+   xlab("Tick Engorgement (days)") +
+   ylab("Number of Submissions") +
+  scale_colour_hue(h = c(0, 360) + 15, c = 100, l = 65,
+  h.start = 0, direction = 1, na.value = "grey50",
+  aesthetics = "colour") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 70, hjust = 0.5, vjust = 0.5)) +
+  scale_fill_discrete (name = "Days Fed")
+
+Engorgement
+ggsave("TR_TS_tick_engorgement.png", plot = Engorgement,
+  scale = 1, width = 9, height = 6,
+  dpi = 300, limitsize = TRUE)
+
+#Engorgement by Species
+
+Engorgement_by_species <- filter(TR_TS_final, !is.na(Feeding_time_days)) %>%
+   ggplot() + geom_bar(aes(x = Feeding_time_days, fill=TR_Species_ID)) +
+   xlab("Tick Engorgement (days)") +
+   ylab("Number of Submissions") +
+  scale_colour_hue(h = c(0, 360) + 15, c = 100, l = 65,
+  h.start = 0, direction = 1, na.value = "grey50",
+  aesthetics = "colour") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 70, hjust = 0.5, vjust = 0.5)) +
+  scale_fill_discrete (name = "Days Fed")
+
+Engorgement_by_species
+ggsave("TR_TS_tick_engorgement_by_species.png", plot = Engorgement_by_species,
+  scale = 1, width = 9, height = 6,
+  dpi = 300, limitsize = TRUE)
+```
+
+```{r echo=FALSE}
+# Month/Seasonal breakdown of submissions
+
+TR_TS_season <- separate(TR_TS_final, Date_Found, c("Month", "Day", "Year") , sep = "/", remove = TRUE, convert = FALSE)
+
+TR_TS_final$Season <- ifelse(TR_TS_season$Month==12 | TR_TS_season$Month==1 | TR_TS_season$Month==2, "Winter", 
+                           ifelse(TR_TS_season$Month==3 | TR_TS_season$Month==4 | TR_TS_season$Month==5, "Spring", 
+                                  ifelse(TR_TS_season$Month==6 | TR_TS_season$Month==7 | TR_TS_season$Month==8, "Summer",
+                                         ifelse(TR_TS_season$Month==9 | TR_TS_season$Month==10 | TR_TS_season$Month==11,                                              "Autumn", 
+                                                NA)))) 
+TR_TS_final$Season <- factor(TR_TS_final$Season, levels = c("Spring", "Summer", "Autumn", "Winter"))
+                            
+Seasonal_submissions <- filter(TR_TS_final, !is.na(Season)) %>%
+   ggplot() + geom_bar(aes(x = Season, fill=TR_Species_ID)) +
+   xlab("Season") +
+   ylab("Number of Submissions") +
+  scale_colour_hue(h = c(0, 360) + 15, c = 100, l = 65,
+  h.start = 0, direction = 1, na.value = "grey50",
+  aesthetics = "colour") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 70, hjust = 0.5, vjust = 0.5)) +
+  scale_fill_discrete (name = "Tick Species")
+Seasonal_submissions
+
+ggsave("TR_TS_seasonal_submissions.png", plot = Seasonal_submissions,
+  scale = 1, width = 9, height = 6,
+  dpi = 800, limitsize = TRUE)
+
+prop.season <- table(TR_TS_final$Season)
+prop.table(prop.season)
+```
+
+```{r echo=FALSE}
+#Regional Submission
+library(forcats)
+
+TR_TS_final$Region <- fct_collapse(TR_TS_final$State,
+                            Northeast = c("ME","NH","VT", "MA", "RI", "CT", "NY", "PA", "NJ"),  
+                            Southeast = c("DC", "DE", "MD", "VA", "WV","NC", "SC", "GA", "FL", "AL", "TN", "KY",                                           "MS","LA", "AR"),
+                            Midwest = c("MO", "OH", "IN", "MI", "IL", "WI", "MN", "IA", "KS", "NE", "SD", "ND"),
+                            Mountain = c("MT", "CO", "WY", "UT", "ID", "NV"),
+                            Southwest = c("OK", "TX", "NM", "AZ"),
+                            Pacific = c("WA", "OR", "CA"),
+                            Noncontiguous = c("HI", "AK"),
+                            Canada = c("Canada"))
+
+TR_TS_final$Region <- factor(TR_TS_final$Region, levels = c("Northeast", "Southeast", "Midwest", "Pacific", "Mountain", "Southwest", "Noncontiguous", "Canada"))                                
+
+Submission_region <- filter(TR_TS_final, !is.na(Region)) %>%
+   ggplot() + geom_bar(aes(x = Region, fill=TR_Species_ID)) +
+   xlab("Submission Region") +
+   ylab("Number of Submissions") +
+  scale_colour_hue(h = c(0, 360) + 15, c = 100, l = 65,
+  h.start = 0, direction = 1, na.value = "grey50",
+  aesthetics = "colour") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 70, hjust = 0.5, vjust = 0.5)) +
+  scale_fill_discrete (name = "Tick Species")
+Submission_region
+
+ggsave("TR_TS_region_submissions.png", plot = Submission_region,
+  scale = 1, width = 9, height = 6,
+  dpi = 600, limitsize = TRUE)
+```
+
+```{r echo=FALSE}
+# Host distribution
+TR_TS_final$Found_on <- factor(TR_TS_final$Found_on, levels = c("On a person", "On a pet", "Loose and wandering"))
+
+Tick_hosts <- filter(TR_TS_final, !is.na(Found_on)) %>%
+   ggplot() + geom_bar(aes(x = Found_on, fill=Found_on)) +
+   xlab("Reported Host or Location of Tick Encounter") +
+   ylab("Number of Submissions") +
+  scale_colour_hue(h = c(0, 360) + 15, c = 100, l = 65,
+  h.start = 0, direction = 1, na.value = "grey50",
+  aesthetics = "colour") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 70, hjust = 0.5, vjust = 0.5)) +
+  scale_fill_discrete (name = "Host")
+
+Tick_hosts
+ggsave("TR_TS_tick_hosts.png", plot = Tick_hosts,
+  scale = 1, width = 9, height = 6,
+  dpi = 300, limitsize = TRUE)
+
+prop.host <- table(TR_TS_final$Found_on)
+prop.table(prop.host)
+
+Tick_hosts_species <- filter(TR_TS_final, !is.na(Found_on)) %>%
+   ggplot() + geom_bar(aes(x = Found_on, fill=TR_Species_ID)) +
+   xlab("Reported Host or Location of Tick Encounter") +
+   ylab("Number of Submissions") +
+  scale_colour_hue(h = c(0, 360) + 15, c = 100, l = 65,
+  h.start = 0, direction = 1, na.value = "grey50",
+  aesthetics = "colour") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 70, hjust = 0.5, vjust = 0.5)) +
+  scale_fill_discrete (name = "Tick Species")
+Tick_hosts_species
+```
+
+```{r echo=FALSE}
+#Confusion matrix for overall ID accuracy 
+
+All_Ref <- factor(TR_TS_final$TR_Count)
+All_Test <- factor(TR_TS_final$TS_Count)
+
+table(All_Test, All_Ref)
+
+confusionMatrix(All_Test, All_Ref, positive = "1")
+
+# calculating the values for ROC curve
+pred_all <- prediction(TR_TS_final$TR_Count, TR_TS_final$TS_Count)
+perf_all <- performance(pred_all,"tpr","fpr")
+
+# changing params for the ROC plot - width, etc
+par(mar=c(5,5,2,2),xaxs = "i",yaxs = "i",cex.axis=1.3,cex.lab=1.4)
+# plotting the ROC curve
+plot(perf_all,col="black",lty=3, lwd=3)
+# calculating AUC
+auc <- performance(pred_all,"auc")
+# now converting S4 class to vector
+auc <- unlist(slot(auc, "y.values"))
+# adding min and max ROC AUC to the center of the plot
+minauc<-min(round(auc, digits = 2))
+maxauc<-max(round(auc, digits = 2))
+minauct <- paste(c("min(AUC)  = "),minauc,sep="")
+maxauct <- paste(c("max(AUC) = "),maxauc,sep="")
+legend(0.3,0.6,c(minauct,maxauct,"\n"),border="white",cex=1.7,box.col = "white")
+```
+
+```{r echo=FALSE}
+#Sensitivity and Specificity for Ixodes scapularis
+
+IscapRef <- factor(Iscap_data$TR_Count)
+IscapTest <- factor(Iscap_data$TS_Count)
+
+Iscap_perf <-table(IscapTest, IscapRef)
+
+confusionMatrix(IscapTest, IscapRef, positive = "1")
+
+pred_iscap <- prediction(Iscap_data$TR_Count, Iscap_data$TS_Count)
+perf_iscap <- performance(pred_iscap,"tpr","fpr")
+
+par(mar=c(5,5,2,2),xaxs = "i",yaxs = "i",cex.axis=1.3,cex.lab=1.4)
+# plotting the ROC curve
+plot(perf_iscap,col="black",lty=3, lwd=3)
+# calculating AUC
+auc <- performance(pred_iscap,"auc")
+# now converting S4 class to vector
+auc <- unlist(slot(auc, "y.values"))
+# adding min and max ROC AUC to the center of the plot
+auc<-(round(auc, digits = 2))
+minauct <- paste(c("AUC  = "),auc,sep="")
+legend(0.3,0.6,c(minauct),border="white",cex=1.7,box.col = "white")
+```
+
+```{r echo=FALSE}
+#Sensitivity and Specificity for A. americanum
+
+AaRef <- factor(Aa_data$TR_Count)
+AaTest <- factor(Aa_data$TS_Count)
+
+table(AaTest, AaRef)
+
+confusionMatrix(AaTest, AaRef, positive = "1")
+
+pred_aa <- prediction(Aa_data$TR_Count, Aa_data$TS_Count)
+perf_aa <- performance(pred_aa,"tpr","fpr")
+
+par(mar=c(5,5,2,2),xaxs = "i",yaxs = "i",cex.axis=1.3,cex.lab=1.4)
+# plotting the ROC curve
+plot(perf_aa,col="black",lty=3, lwd=3)
+# calculating AUC
+auc <- performance(pred_aa,"auc")
+# now converting S4 class to vector
+auc <- unlist(slot(auc, "y.values"))
+# adding min and max ROC AUC to the center of the plot
+auc<-(round(auc, digits = 2))
+minauct <- paste(c("AUC  = "),auc,sep="")
+legend(0.3,0.6,c(minauct),border="white",cex=1.7,box.col = "white")
+
+```
+
+```{r echo=FALSE}
+#Sensitivity/Specificity for Dermacentor (D. variabilis, D. occidentalis, D. andersoni) ticks
+
+DvRef <- factor(Dv_data$TR_Count) 
+DvTest <- factor(Dv_data$TS_Count)
+
+table(DvTest, DvRef)
+
+confusionMatrix(DvTest, DvRef, positive = "1")
+
+pred_dv <- prediction(Dv_data$TR_Count, Dv_data$TS_Count)
+perf_dv <- performance(pred_dv,"tpr","fpr")
+
+par(mar=c(5,5,2,2),xaxs = "i",yaxs = "i",cex.axis=1.3,cex.lab=1.4)
+# plotting the ROC curve
+plot(perf_dv,col="black",lty=3, lwd=3)
+# calculating AUC
+auc <- performance(pred_dv,"auc")
+# now converting S4 class to vector
+auc <- unlist(slot(auc, "y.values"))
+# adding min and max ROC AUC to the center of the plot
+auc<-(round(auc, digits = 2))
+minauct <- paste(c("AUC  = "),auc,sep="")
+legend(0.3,0.6,c(minauct),border="white",cex=1.7,box.col = "white")
+```
+
+```{r include=FALSE}
+library(tidyr)
+##Logistic regression modeling - Which variables are associated with TS identification?
+
+#Establishing modeling dataset
+TR_TS_mod <- TR_TS_final %>%
+  dplyr::select(TS_Count, TR_Species_ID, Corrected_Stage_ID, State, Season, TS_Uncertain, Feeding_time_days, Found_on, Region)
+
+#Recoding levels
+TR_TS_mod$TS_ID <-factor(TR_TS_mod$TS_Count,
+                            levels = c(0,1))
+
+TR_TS_mod$TS_Uncertain <-factor(TR_TS_mod$TS_Uncertain)
+TR_TS_mod$TS_Uncertain <- fct_recode(TR_TS_mod$TS_Uncertain, 
+                                       Certain = "0",
+                                       Uncertain = "1")
+
+TR_TS_mod$Corrected_Stage_ID <- factor(TR_TS_mod$Corrected_Stage_ID, levels = c("Adult", "Nymph", "Larva"))
+
+#Collapsing species levels due to small sample numbers in "other" category
+TR_TS_mod$TR_Species_ID <- fct_collapse(TR_TS_mod$TR_Species_ID,
+                            Ixodes_scapularis = c("Ixodes scapularis"),
+                            Dermacentor_variabilis = c("Dermacentor variabilis"),
+                            Amblyomma_americanum = c("Amblyomma americanum"),
+                            Ixodes_pacificus = c("Ixodes pacificus"),
+                            Other = c("Dermacentor andersoni", "Dermacentor spp.", "Ixodes spp.", "Amblyomma                                  spp.", "Rhipicephalus sanguineus", "Other (tick)"))
+```
+
+```{r include=FALSE}
+#Collapsing region levels due to small regional sampling
+TR_TS_mod$Region_collapsed <- fct_collapse(TR_TS_mod$State,
+                            Northeast = c("ME","NH","VT", "MA", "RI", "CT", "NY", "PA", "NJ"),  
+                            Southeast = c("DC", "DE", "MD", "VA", "WV","NC", "SC", "GA", "FL", "AL", "TN", "KY",                                     "MS","LA", "AR"),
+                            Midwest = c("MO", "OH", "IN", "MI", "IL", "WI", "MN", "IA", "KS", "NE", "SD", "ND"),
+                            Pacific = c("WA", "OR", "CA"),
+                            Southwest_Mountain_Noncontig_Canada = c("TX", "OK", "MT", "CO", "WY", "UT", "ID", "NV","HI",                              "AK", "Canada"))
+```
+
+```{r}                           
+#Renaming Variables 
+TR_TS_mod$TS_ID <- factor(TR_TS_mod$TS_ID,
+                          levels = c(0,1)) #Binary outcome variable
+TR_TS_mod$Season <- factor(TR_TS_mod$Season)
+TR_TS_mod$Species <- factor(TR_TS_mod$TR_Species_ID)
+TR_TS_mod$Stage <- factor(TR_TS_mod$Corrected_Stage_ID)
+TR_TS_mod$Uncertainty <- factor(TR_TS_mod$TS_Uncertain) #Binary variable for whether TS reported an uncertain ID
+TR_TS_mod$Engorgement <- factor(TR_TS_mod$Feeding_time_days)
+TR_TS_mod$State <- factor(TR_TS_mod$State)
+TR_TS_mod$Region <- factor(TR_TS_mod$Region)
+TR_TS_mod$Host <- factor(TR_TS_mod$Found_on)
+```
+
+```{r}
+#Randomizing test and training data sets
+ind<- sample(1:818,400, replace = FALSE) #randomizing 400 datapoints
+
+train<-TR_TS_mod[ind,] #training dataset
+test<-TR_TS_mod[ind,] #testing dataset
+```  
+
+```{r}
+#MODEL SELECTION 
+library(pander)
+library(lmtest)
+library(AICcmodavg)
+library(pscl)
+library(MLeval)
+
+#Single Parameter Models
+global_mod <- glm(TS_ID ~ Season+Species+Stage+Uncertainty+Engorgement+State+Host+Region,family=binomial(link='logit'), data=train) #Global model
+summary(global_mod)
+
+mod_null<- glm(TS_ID ~ 1 ,family=binomial(link='logit'), data=train)
+summary(mod_null) #Null model
+
+mod1a<-glm(TS_ID ~ Season,family=binomial(link='logit'),data=train)
+mod1b<-glm(TS_ID ~ Species,family=binomial(link='logit'),data=train)
+mod1c<-glm(TS_ID ~ Stage,family=binomial(link='logit'),data=train)
+mod1d<-glm(TS_ID ~ Uncertainty,family=binomial(link='logit'),data=train)
+mod1e<-glm(TS_ID ~ Engorgement,family=binomial(link='logit'),data=train)
+mod1f<-glm(TS_ID ~ State,family=binomial(link='logit'),data=train)
+mod1g<-glm(TS_ID ~ Host,family=binomial(link='logit'),data=train)
+mod1h<-glm(TS_ID ~ Region,family=binomial(link='logit'),data=train)
+
+summary(mod1a) #Season
+summary(mod1b) #Species
+summary(mod1c) #Stage
+summary(mod1d) #Uncertainty
+summary(mod1e) #Engorgement
+summary(mod1f) #State
+summary(mod1g) #Host
+summary(mod1h) #Region
+
+single_mods <- list(null_mod = mod_null,
+             season_mod = mod1a,
+             species_mod = mod1b,
+             stage_mod = mod1c,
+             uncertainty_mod = mod1d,
+             engorgment_mod = mod1e,
+             state_mod = mod1f,
+             host_mod = mod1g,
+             region_mod = mod1h,
+             global_mod = global_mod)
+
+aictab(single_mods)
+```
+
+```{r}
+#Multiple variable models
+
+#Two params
+mod2a<-glm(TS_ID ~ Season+Species,family=binomial(link='logit'),data=train)
+mod2b<-glm(TS_ID ~ Season+Stage,family=binomial(link='logit'),data=train)
+mod2c<-glm(TS_ID ~ Season+Uncertainty,family=binomial(link='logit'),data=train)
+mod2d<-glm(TS_ID ~ Season+Engorgement,family=binomial(link='logit'),data=train)
+mod2e<-glm(TS_ID ~ Species+Stage,family=binomial(link='logit'),data=train)
+mod2f<-glm(TS_ID ~ Species+Uncertainty,family=binomial(link='logit'),data=train)
+mod2g<-glm(TS_ID ~ Species+Engorgement,family=binomial(link='logit'),data=train)
+mod2h<-glm(TS_ID ~ Stage+Uncertainty,family=binomial(link='logit'),data=train)
+mod2i<-glm(TS_ID ~ Stage+Engorgement,family=binomial(link='logit'),data=train)
+mod2j<-glm(TS_ID ~ Engorgement+State,family=binomial(link='logit'),data=train)
+mod2k<-glm(TS_ID ~ Uncertainty+Engorgement,family=binomial(link='logit'),data=train)
+mod2l<-glm(TS_ID ~ Uncertainty+State,family=binomial(link='logit'),data=train)
+mod2m<-glm(TS_ID ~ Region+Species,family=binomial(link='logit'),data=train)
+mod2n<-glm(TS_ID ~ Region+Stage,family=binomial(link='logit'),data=train)
+mod2o<-glm(TS_ID ~ Region+Uncertainty,family=binomial(link='logit'),data=train)
+mod2p<-glm(TS_ID ~ Region+Engorgement,family=binomial(link='logit'),data=train)
+mod2q<-glm(TS_ID ~ Region+Host,family=binomial(link='logit'),data=train)
+mod2r<-glm(TS_ID ~ Species+State,family=binomial(link='logit'),data=train)
+
+summary(mod2a) #Season+Species
+summary(mod2b) #Season+Stage
+summary(mod2c) #Season+Uncertainty
+summary(mod2d) #Season+Engorgement
+summary(mod2e) #Species+Stage
+summary(mod2f) #Species+Uncertainty
+summary(mod2g) #Species+Engorgement
+summary(mod2h) #Stage+Uncertainty
+summary(mod2i) #Stage+Engorgement
+summary(mod2j) #Engorgement+State
+summary(mod2k) #Uncertainty+Engorgement
+summary(mod2l) #Uncertainty+State
+summary(mod2m) #Region+Species
+summary(mod2n) #Region+Stage
+summary(mod2o) #Region+Uncertainty
+summary(mod2p) #Region+Engorgement
+summary(mod2q) #Region+Host
+summary(mod2r) #Species+State
+
+two_param_mods <- list(null_mod = mod_null,
+                      season_species = mod2a,
+                      season_stage = mod2b,
+                      season_uncertain = mod2c,
+                      season_engorg = mod2d,
+                      species_stage = mod2e,
+                      species_uncertain = mod2f,
+                      species_engorg = mod2g,
+                      stage_uncertain = mod2h,
+                      stage_engorge = mod2i,
+                      engorge_state = mod2j,
+                      uncertain_engorge = mod2k,
+                      uncertain_state = mod2l,
+                      region_spec = mod2m,
+                      region_stage = mod2n,
+                      region_uncert = mod2o,
+                      region_engorg = mod2p,
+                      region_host = mod2q,
+                      species_state = mod2r,
+                      global_mod = global_mod)
+                      
+aictab(two_param_mods)
+summary(mod2e)
+exp(coef(mod2e))
+```
+
+```{r}
+#Three params
+mod3a<-glm(TS_ID ~ Season+Species+Stage,family=binomial(link='logit'),data=train)
+mod3b<-glm(TS_ID ~ Species+Stage+Uncertainty,family=binomial(link='logit'),data=train)
+mod3c<-glm(TS_ID ~ Stage+Uncertainty+Engorgement,family=binomial(link='logit'),data=train)
+mod3d<-glm(TS_ID ~ Uncertainty+Engorgement+State,family=binomial(link='logit'),data=train)
+mod3e<-glm(TS_ID ~ Region+Species+Stage,family=binomial(link='logit'),data=train)
+mod3f<-glm(TS_ID ~ Region+Host+Engorgement,family=binomial(link='logit'),data=train)
+mod3g<-glm(TS_ID ~ Region+Uncertainty+Season,family=binomial(link='logit'),data=train)
+mod3h<-glm(TS_ID ~ Region+Uncertainty+Stage,family=binomial(link='logit'),data=train)
+
+summary(mod3a) #Season+Species+Stage
+summary(mod3b) #Species+Stage+Uncertainty
+summary(mod3c) #Stage+Uncertainty+Engorgement
+summary(mod3d) #Uncertainty+Engorgement+State
+summary(mod3e) #Region+Species+Stage
+summary(mod3f) #Region+Host+Engorgement
+summary(mod3g) #Region+Uncertainty+Season
+summary(mod3h) #Region+Uncertainty+Stage
+
+three_param_mods <- list(null_mod = mod_null,
+                        season_spec_stage = mod3a,
+                        spec_stage_uncert = mod3b,
+                        stage_uncert_engorg = mod3c,
+                        uncert_engorg_state = mod3d,
+                        reg_spec_stage = mod3e,
+                        reg_host_engorg = mod3f,
+                        reg_uncert_season = mod3g,
+                        reg_uncert_stage = mod3h
+                        )
+aictab(three_param_mods)
+summary(mod3e)
+summary(mod3a)
+summary(mod3b)
+```
+
+```{r} 
+#Four params
+mod4a<-glm(TS_ID ~ Season+Species+Stage+Host,family=binomial(link='logit'),data=train)
+mod4b<-glm(TS_ID ~ Species+Stage+Host+Engorgement,family=binomial(link='logit'),data=train)
+mod4c<-glm(TS_ID ~ Stage+Host+Engorgement+Uncertainty,family=binomial(link='logit'),data=train)
+mod4d<-glm(TS_ID ~ Uncertainty+State+Season+Region,family=binomial(link='logit'),data=train)
+mod4e<- glm(TS_ID ~ State+Region+Season+Species,family=binomial(link='logit'),data=train)
+mod4f<- glm(TS_ID ~ Species+Stage+Season+Region,family=binomial(link='logit'),data=train)
+mod4g<- glm(TS_ID ~ Uncertainty+Engorgement+State+Region,family=binomial(link='logit'),data=train)
+mod4h<-glm(TS_ID ~ Uncertainty+Stage+Region+Species,family=binomial(link='logit'),data=train)
+
+summary(mod4a) #Season+Species+Stage+Host
+summary(mod4b) #Species+Stage+Host+Engorgement
+summary(mod4c) #Stage+Host+Engorgement+Uncertainty
+summary(mod4d) #Uncertainty+State+Season+Region
+summary(mod4e) #State+Region+Season+Species
+summary(mod4f) #Species+Stage+Season+Region
+summary(mod4g) #Uncertainty+Engorgement+State+Region
+summary(mod4h) #Uncertainty+Stage+Region+Species
+
+four_param_mods <- list(null_mod = mod_null,
+                        season_spec_stage_host = mod4a,
+                        spec_stage_host_engorg = mod4b,
+                        stage_host_engorg_uncert = mod4c,
+                        uncert_state_season_reg = mod4d,
+                        state_reg_season_spec = mod4e,
+                        spec_stage_season_reg = mod4f,
+                        uncert_engorg_state_reg = mod4g,
+                        uncert_stage_reg_species = mod4h)
+aictab(four_param_mods)
+```
+
+```{r}
+#Five params
+mod5a<-glm(TS_ID ~ Season+Species+Stage+Uncertainty+Engorgement,family=binomial(link='logit'),data=train)
+mod5b<-glm(TS_ID ~ Species+Stage+Uncertainty+Engorgement+State,family=binomial(link='logit'),data=train)
+mod5c<-glm(TS_ID ~ Stage+Uncertainty+Engorgement+State+Host,family=binomial(link='logit'),data=train)
+mod5d<-glm(TS_ID ~ Season+Species+Stage+Host+Region,family=binomial(link='logit'),data=train)
+
+summary(mod5a) #Season+Species+Stage+Uncertainty+Engorgement
+summary(mod5b) #Species+Stage+Uncertainty+Engorgement+State
+summary(mod5c) #Stage+Uncertainty+Engorgement+State+Host
+summary(mod5d) #Season+Species+Stage+Host+Region
+
+five_param_mods <- list(null_mod = mod_null,
+                        season_spec_stage_uncert_engorg = mod5a,
+                        spec_stage_uncert_engorg_state = mod5b,
+                        stage_uncert_engorg_state_host = mod5c,
+                        season_species_stage_host_reg = mod5d
+                        )
+aictab(five_param_mods)
+```
+
+```{r}
+#Six params
+mod6a<-glm(TS_ID ~ Season+Species+Stage+Uncertainty+Engorgement+Host, family=binomial(link='logit'),data=train)
+mod6b<-glm(TS_ID ~ Species+Stage+Uncertainty+Engorgement+State+Host,family=binomial(link='logit'),data=train)
+mod6c<-glm(TS_ID ~ Species+Stage+Uncertainty+Engorgement+Region+Host,family=binomial(link='logit'),data=train)
+
+summary(mod6a) #Season+Species+Stage+Uncertainty+Engorgement+Host
+summary(mod6b) #Species+Stage+Uncertainty+Engorgement+State+Host
+summary(mod6c) #Species+Stage+Uncertainty+Engorgement+Region+Host
+
+six_param_mods <- list(null_mod = mod_null,
+                        season_spec_stage_uncert_engorg_host = mod6a,
+                        spec_stage_uncert_engorg_state_host = mod6b,
+                        stage_uncert_engorg_reg_host_season = mod6c
+                        )
+aictab(six_param_mods)
+```
+
+```{r}
+#Seven params
+mod7a<-glm(TS_ID ~ Season+Species+Stage+Uncertainty+Engorgement+State+Host,family=binomial(link='logit'),data=train)
+mod7b<-glm(TS_ID ~ Season+Species+Stage+Uncertainty+Engorgement+Region+Host,family=binomial(link='logit'),data=train)
+
+summary(mod7a) #Season+Species+Stage+Uncertainty+Engorgement+State+Host
+summary(mod7b) #Season+Species+Stage+Uncertainty+Engorgement+Region+Host
+
+seven_param_mods <- list(null_mod = mod_null,
+                         season_spec_stage_uncert_engorg_state_host = mod7a,
+                         season_spec_stage_uncert_engorg_reg_host = mod7b
+                         )
+aictab(seven_param_mods)
+```
+
+```{r}
+#MODEL EVALUATION
+
+#AIC Comparison
+aictab(single_mods)
+aictab(two_param_mods)
+aictab(three_param_mods)
+aictab(four_param_mods)
+aictab(five_param_mods)
+aictab(six_param_mods)
+aictab(seven_param_mods)
+
+#Lowest AIC (& within two points of each other):  species/stage, reg/spec/stage, spec/stage/uncertainty, uncertainty/stage/reg/species, species/stage/season/region
+
+##Summary of top models
+summary(mod2e) #species_stage 
+summary(mod3a) #season+species+stage
+summary(mod3b) #spec_stage_uncert
+summary(mod3e) #reg_spec_stage 
+summary(mod4h) #uncert_stage_reg_species 
+summary(mod4f) #spec_stage_season_reg
+
+
+#Top models with interactions added
+mod2e_int <- glm(TS_ID ~ Species*Stage, family = binomial(link = "logit"), data = train)
+summary(mod2e_int)
+
+mod3b_int <-glm(formula = TS_ID ~ (Species + Stage + Uncertainty)^2, family = binomial(link = "logit"), data=train)
+summary(mod3b_int)
+
+mod3b_int2 <-glm(formula = TS_ID ~ (Species*Stage) + Uncertainty, family = binomial(link = "logit"), data=train)
+summary(mod3b_int2)
+
+mod3e_int <- glm(formula = TS_ID ~ (Region + Species + Stage)^2, family = binomial(link = "logit"), data = train)
+summary(mod3e_int)
+
+mod4f_int <-glm(formula = TS_ID ~ (Species + Stage + Season + Region)^2, family = binomial(link = "logit"), data = train)
+summary(mod4f_int)
+
+mod4h_int <-glm(formula = TS_ID ~ (Uncertainty + Stage + Region + Species)^2, family = binomial(link = "logit"), data = train)
+summary(mod4h_int)
+
+AIC(mod2e, mod3b, mod3e, mod4h, mod4f, mod2e_int, mod3b_int, mod3b_int2, mod3e_int, mod4f_int, mod4h_int)
+
+varImp(mod2e, value="nsubsets")
+varImp(mod3b, value="nsubsets")
+varImp(mod3e, value="nsubsets")
+varImp(mod4h, value="nsubsets")
+varImp(mod4f, value="nsubsets")
+varImp(mod2e_int, value="nsubsets")
+varImp(mod3b_int, value="nsubsets")
+varImp(mod3b_int2, value="nsubsets")
+varImp(mod3e_int, value="nsubsets")
+varImp(mod4f_int, value="nsubsets")
+varImp(mod4h_int, value="nsubsets")
+
+#species_stage (mod2e) # display results
+confint(mod2e) # 95% CI for the coefficients
+coef(mod2e) #coefficients
+exp(coef(mod2e)) # exponentiated coefficients
+exp(confint(mod2e)) # 95% CI for exponentiated coefficients
+predict(mod2e, type="response") # predicted values
+residuals(mod2e, type="deviance") # residuals
+
+##spec_stage_uncert (mod3b)
+summary(mod3b) # display results
+confint(mod3b) # 95% CI for the coefficients
+coef(mod3b) #coefficients
+exp(coef(mod3b)) # exponentiated coefficients
+exp(confint(mod3b)) # 95% CI for exponentiated coefficients
+predict(mod3b, type="response") # predicted values
+residuals(mod3b, type="deviance") # residuals
+
+#reg_spec_stage (mod3e)
+summary(mod3e) # display results
+confint(mod3e) # 95% CI for the coefficients
+coef(mod3e) #coefficients
+exp(coef(mod3e)) # exponentiated coefficients
+exp(confint(mod3e)) # 95% CI for exponentiated coefficients
+predict(mod3e, type="response") # predicted values
+residuals(mod3e, type="deviance") # residuals
+
+#uncert_stage_reg_species (mod4h)
+summary(mod4h) # display results
+confint(mod4h) # 95% CI for the coefficients
+coef(mod4h) #coefficients
+exp(coef(mod4h)) # exponentiated coefficients
+exp(confint(mod4h)) # 95% CI for exponentiated coefficients
+predict(mod4h, type="response") # predicted values
+residuals(mod4h, type="deviance") # residuals
+
+#summary(mod4f) #spec_stage_season_reg 
+summary(mod4f) # display results
+confint(mod4f) # 95% CI for the coefficients
+coef(mod4f) #coefficients
+exp(coef(mod4f)) # exponentiated coefficients
+exp(confint(mod4f)) # 95% CI for exponentiated coefficients
+predict(mod4f, type="response") # predicted values
+residuals(mod4f, type="deviance") # residuals
+
+summary(mod2e_int) # display results
+confint(mod2e_int) # 95% CI for the coefficients
+coef(mod2e_int) #coefficients
+exp(coef(mod2e_int)) # exponentiated coefficients
+exp(confint(mod2e_int)) # 95% CI for exponentiated coefficients
+predict(mod2e_int, type="response") # predicted values
+residuals(mod2e_int, type="deviance") # residuals
+
+AIC(mod2e, mod3b, mod3e, mod4h, mod4f, mod2e_int, mod3b_int, mod3b_int2, mod3e_int, mod4f_int, mod4h_int)
+
+#McFadden's Pseudo R2 for correlation
+pR2(mod2e) 
+pR2(mod3b) 
+pR2(mod3e) 
+pR2(mod4h)
+pR2(mod4f)
+
+#Testing for difference among models given close AIC scores (within 2 points)
+anova(mod2e, mod3b, mod3e, mod4h, mod4f, test="Chisq") 
+
+#Wald test for significance of individual predictors
+#mod2e - Species+Stage
+regTermTest(mod2e, "Species")
+regTermTest(mod2e, "Stage")
+
+#mod3b - Species+Stage+Uncertainty
+regTermTest(mod3b, "Species")
+regTermTest(mod3b, "Stage") 
+regTermTest(mod3b, "Uncertainty") 
+
+#mod3e - Region+Species+Stage
+regTermTest(mod3e, "Region") 
+regTermTest(mod3e, "Species") 
+regTermTest(mod3e, "Stage")
+
+#mod4f - Speces+Stage+Season+Region
+regTermTest(mod4f, "Species") 
+regTermTest(mod4f, "Stage") 
+regTermTest(mod4f, "Season") 
+regTermTest(mod4f, "Region")
+
+#mod4h - Uncertainty+Stage+Region+Species 
+regTermTest(mod4h, "Uncertainty") 
+regTermTest(mod4h, "Stage") 
+regTermTest(mod4h, "Region") 
+regTermTest(mod4h, "Species")
+
+#mod2e_int - Species*Stage
+regTermTest(mod2e_int, "Species")
+regTermTest(mod2e_int, "Stage") 
+
+#mod3b_int - (Species+Stage+Uncertainty)^2
+regTermTest(mod3b_int, "Species")
+regTermTest(mod3b_int, "Stage") 
+regTermTest(mod3b_int, "Uncertainty") 
+```
+
+```{r}
+#Hosmer and Lemeshow goodness of fit (GOF) test
+
+#mod2e
+for (i in 3:20) {
+	print(hoslem.test(mod2e$y, fitted(mod2e), g=i)$p.value)
+}
+
+#mod3b
+for (i in 4:20) {
+	print(hoslem.test(mod3b$y, fitted(mod3b), g=i)$p.value)
+}
+
+#mod3e
+for (i in 4:20) {
+	print(hoslem.test(mod3e$y, fitted(mod3e), g=i)$p.value)
+}
+
+#mod4f
+for (i in 4:20) {
+	print(hoslem.test(mod4f$y, fitted(mod4f), g=i)$p.value)
+}
+
+#mod4h
+for (i in 4:20) {
+	print(hoslem.test(mod4h$y, fitted(mod4h), g=i)$p.value)
+}
+
+#mod2e_int
+for (i in 4:20) {
+	print(hoslem.test(mod4h$y, fitted(mod2e_int), g=i)$p.value)
+}
+```
+
+```{r}
+#Fitting Predictive Model and Evaluating Model Performance on Test Dataset
+
+##Compare Train and Test Sets
+mod2e_train <- glm(TS_ID ~ Species+Stage,family=binomial(link='logit'),data=train)
+mod2e_test <- glm(TS_ID ~ Species+Stage,family=binomial(link='logit'),data=test)
+mod2e_full <- glm(TS_ID ~ Species+Stage,family=binomial(link='logit'),data=TR_TS_mod)
+summary(mod2e_test)
+summary(mod2e_full)
+anova(mod2e_test, mod2e_train, test="Chisq")
+
+mod3b_train <-glm(TS_ID ~ Species+Stage+Uncertainty,family=binomial(link='logit'),data=train)
+mod3b_test <- glm(TS_ID ~ Species+Stage+Uncertainty,family=binomial(link='logit'),data=test)
+mod3b_full<- glm(TS_ID ~ Species+Stage+Uncertainty,family=binomial(link='logit'),data=TR_TS_mod)
+summary(mod3b_test)
+summary(mod3b_full)
+anova(mod3b_test, mod3b_train, test = "Chisq")
+
+mod3e_train <-glm(TS_ID ~ Region+Species+Stage, family = binomial(link = "logit"), data = train)
+mod3e_test <-glm(TS_ID ~ Region+Species+Stage, family = binomial(link = "logit"), data = test)
+mod3e_full <-glm(TS_ID ~ Region+Species+Stage, family = binomial(link = "logit"), data = TR_TS_mod)
+summary(mod3e_test)
+summary(mod3e_full)
+anova(mod3e_test, mod3e_train, test = "Chisq")
+
+mod4f_train <-glm(TS_ID ~ Species + Stage + Season + Region, family = binomial(link = "logit"), data = train)
+mod4f_test <-glm(TS_ID ~ Species + Stage + Season + Region, family = binomial(link = "logit"), data = test)
+mod4f_full <-glm(TS_ID ~ Species + Stage + Season + Region, family = binomial(link = "logit"), data = TR_TS_mod)
+summary(mod4f_test)
+summary(mod4f_full)
+anova(mod4f_test, mod4f_train, test = "Chisq")
+
+mod4h_train <-glm(TS_ID ~ Uncertainty + Stage + Region + Species, family = binomial(link = "logit"), data = train)
+mod4h_test <-glm(TS_ID ~ Uncertainty + Stage + Region + Species, family = binomial(link = "logit"), data = test)
+mod4h_full <-glm(TS_ID ~ Uncertainty + Stage + Region + Species, family = binomial(link = "logit"), data = TR_TS_mod)
+summary(mod4h_test)
+summary(mod4h_full)
+anova(mod4h_test, mod4h_train, test = "Chisq")
+
+mod2e_int_train <- glm(TS_ID ~ Species*Stage,family=binomial(link='logit'),data=train)
+mod2e_int_test <- glm(TS_ID ~ Species*Stage,family=binomial(link='logit'),data=test)
+mod2e_int_full <- glm(TS_ID ~ Species*Stage,family=binomial(link='logit'),data=TR_TS_mod)
+summary(mod2e_int_test)
+summary(mod2e_int_full)
+anova(mod2e_int_test, mod2e_int_train, test="Chisq")
+```
+
+
+```{r}
+#ROC curves 
+
+library(pROC)
+
+#mod2e
+test_prob_2e = predict(mod2e, newdata = test, type = "response")
+test_roc_2e = roc(test$TS_ID ~ test_prob_2e, plot = TRUE, print.auc = TRUE)
+
+#mod3e
+test_prob_3e = predict(mod3e, newdata = test, type = "response")
+test_roc_3e = roc(test$TS_ID ~ test_prob_3e, plot = TRUE, print.auc = TRUE)
+
+#mod3b
+test_prob_3b = predict(mod3b, newdata = test, type = "response")
+test_roc_3b = roc(test$TS_ID ~ test_prob_3b, plot = TRUE, print.auc = TRUE)
+
+#mod4f
+test_prob_4f = predict(mod4f, newdata = test, type = "response")
+test_roc_4f = roc(test$TS_ID ~ test_prob_4f, plot = TRUE, print.auc = TRUE)
+
+#mod4h #Optimal model
+test_prob_4h = predict(mod4h, newdata = test, type = "response")
+test_roc_4h = roc(test$TS_ID ~ test_prob_4h, plot = TRUE, print.auc = TRUE)
+```
+
+
+
+```{r}
+library(texreg)
+#Model Display Table and Reporting for optimal model
+summary(mod4f_test)
+screenreg(list(mod4f_test))
+
+#Comparison to other models
+screenreg(list(mod4f_test, mod2e_test, mod3b_test, mod3e_test, mod4h_test),
+dcolumn = TRUE, booktabs = TRUE, use.packages = FALSE, label = "tab:3", caption = "Comparison of top GLM models for tick identification accuracy.", float.pos = "hb!")
+
+#Odds ratios from logit chart
+exp(coef(mod4f_test))
+exp(cbind(OR = coef(mod4f_test), confint.default(mod4f_test)))
+```
+
+
+
+
+
+
+
+
+
+
+
