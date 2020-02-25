@@ -1,0 +1,596 @@
+---
+title: "Public Tick ID Analysis_2_6"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Desktop/PhD/Dissertation Files/Public Tick ID Analysis")
+
+Sys.setlocale("LC_ALL", "C")
+
+#Packages
+library(readr)
+library(emdbook)
+library(bbmle)
+library(lme4)
+library(nlme)
+library(scales)
+library(lattice)
+library(pscl) 
+library(ROCR)
+library(lmtest)
+library(survey)
+library(caret)
+library(pROC)
+library(cvTools)
+library(rpart)
+library(boot)
+library(ggplot2)
+library(tidyverse)
+library(vctrs)
+library(lubridate)
+library(RColorBrewer)
+library(plotly)
+library(devtools)
+library(urbnmapr)
+library(forcats)
+```
+
+```{r, include=FALSE}
+#Working Directory and CSV Data File
+
+setwd("~/Desktop/PhD/Committee and Program Documents/Dissertation Files/Public Tick ID Analysis")
+
+ticks <- read_csv("Tickspotters_2014_2018_Nov4.csv")
+```
+
+```{r include=FALSE}
+#Divide dates by month and generate seasons
+
+all_ticks <- separate(ticks, Date_Found, c("Month", "Day", "Year") , sep = "/", remove = TRUE, convert = FALSE)
+
+all_ticks$Season <- ifelse(all_ticks$Month==12 | all_ticks$Month==1 | all_ticks$Month==2, "Winter", 
+                           ifelse(all_ticks$Month==3 | all_ticks$Month==4 | all_ticks$Month==5, "Spring", 
+                                  ifelse(all_ticks$Month==6 | all_ticks$Month==7 | all_ticks$Month==8, "Summer",
+                                         ifelse(all_ticks$Month==9 | all_ticks$Month==10 | all_ticks$Month==11, "Fall", 
+                                                NA)))) 
+```
+
+```{r include=FALSE}
+#Renaming Variables and Factorizing
+all_ticks$Customer_Correct <- factor(all_ticks$Customer_Correct)
+all_ticks$Public_ID <-factor(all_ticks$TickSpotter_Response_SpeciesID)
+all_ticks$Species_ID_correct_Y_or_N <- factor(all_ticks$SpeciesID_correct_Y_or_N) 
+all_ticks$StageID_correct_Y_or_N <- factor(all_ticks$StageID_correct_Y_or_N)
+all_ticks$Corrected_Species_ID <- factor(all_ticks$Corrected_Species_ID) 
+all_ticks$Corrected_Stage_ID <- factor(all_ticks$Corrected_Stage_ID) 
+all_ticks$Not_a_tick_ID <- factor(all_ticks$Not_a_tick_ID)
+all_ticks$Corrected_Sex <- factor(all_ticks$Corrected_Sex) 
+all_ticks$Engorgement <- factor(all_ticks$`Feeding-time_days`, levels = c(0,1,1.5,2,2.5,3,3.5,4,4.5,5,6,7,8)) 
+all_ticks$Month <- factor(all_ticks$Month, levels = c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"))
+all_ticks$Host <- factor(all_ticks$Found_on, levels = c("Loose and wandering", "On a pet", "On a person"))
+all_ticks$Pet_Type <- factor(all_ticks$Pet_Type) 
+all_ticks$Canadian_Provinces <- factor(all_ticks$Canadian_Provinces)
+all_ticks$Mexican_States <- factor(all_ticks$Mexican_States) 
+all_ticks$Zipcode <- factor(all_ticks$Zip_code)
+all_ticks$State <- factor(all_ticks$State_Country)
+all_ticks$Season <- factor(all_ticks$Season, levels = c("Spring", "Summer", "Fall", "Winter"))
+all_ticks$Human_age <- factor(all_ticks$Person_Age)
+```
+
+```{r include=FALSE}
+#Filtering out non-US states
+library(dplyr)
+
+us_ticks <- filter(all_ticks, State %in% c('Connecticut', 'Delaware', 'Massachusetts', 'Maryland', 'Maine', 'Minnesota', 'New Hampshire', 'New Jersey', 'New York', 'Pennsylvania', 'Rhode Island', 'Virginia', 'Vermont', 'Wisconsin', 'Alaska', 'Alabama', 'Arkansas', 'Arizona', 'California', 'Colorado', 'District of Columbia', 'Florida', 'Georgia', 'Hawaii', 'Iowa', 'Idaho', 'Illinois', 'Indiana', 'Kansas', 'Kentucky', 'Louisiana', 'Michigan', 'Missouri', 'Mississippi', 'Montana', 'North Carolina', 'North Dakota', 'Nebraska', 'New Mexico', 'Nevada', 'Ohio', 'Oklahoma', 'Oregon', 'South Carolina', 'South Dakota', 'Tennessee', 'Texas', 'Utah', 'Washington', 'Wyoming', 'West Virginia'))
+
+us_ticks$State <- factor(us_ticks$State_Country)
+us_ticks <-select(us_ticks, -Canadian_Provinces) 
+us_ticks <-select(us_ticks, -Mexican_States)
+
+us_ticks$Region <- fct_collapse(us_ticks$State,
+                                        Northeast = c("Maine","New Hampshire","Vermont", "Massachusetts", "Rhode Island", "Connecticut", "New York", "Pennsylvania", "New Jersey"),  
+                            Southeast = c("District of Columbia", "Delaware", "Maryland", "Virginia", "West Virginia","North Carolina", "South Carolina", "Georgia", "Florida", "Alabama", "Tennessee", "Kentucky", "Mississippi", "Louisiana", "Arkansas"),
+                            Midwest = c("Illinois", "Indiana", "Iowa", "Kansas", "Michigan", "Minnesota", "Missouri", "Nebraska", "North Dakota", "Ohio", "South Dakota", "Wisconsin"),
+                            Mountain = c("Montana", "Colorado", "Wyoming", "Utah", "Idaho", "Nevada"),
+                            Southwest = c("Oklahoma", "Texas", "New Mexico", "Arizona"),
+                            Pacific = c("Washington", "Oregon", "California"),
+                            Noncontiguous = c("Hawaii", "Alaska"),
+                            )
+us_ticks$Region <- factor(us_ticks$Region, levels = c("Northeast", "Southeast", "Midwest", "Mountain", "Southwest", "Pacific", "Noncontiguous"))
+```
+
+```{r, include=FALSE}
+#Organizing states into regions
+
+all_ticks$Region <- fct_collapse(all_ticks$State,
+                                        Northeast = c("Maine","New Hampshire","Vermont", "Massachusetts", "Rhode Island", "Connecticut", "New York", "Pennsylvania", "New Jersey"),  
+                            Southeast = c("District of Columbia", "Delaware", "Maryland", "Virginia", "West Virginia","North Carolina", "South Carolina", "Georgia", "Florida", "Alabama", "Tennessee", "Kentucky", "Mississippi", "Louisiana", "Arkansas"),
+                            Midwest = c("Illinois", "Indiana", "Iowa", "Kansas", "Michigan", "Minnesota", "Missouri", "Nebraska", "North Dakota", "Ohio", "South Dakota", "Wisconsin"),
+                            Mountain = c("Montana", "Colorado", "Wyoming", "Utah", "Idaho", "Nevada"),
+                            Southwest = c("Oklahoma", "Texas", "New Mexico", "Arizona"),
+                            Pacific = c("Washington", "Oregon", "California"),
+                            Noncontiguous = c("Hawaii", "Alaska"),
+                            Canada = c("Canada"),
+                            Mexico = c("Mexico"),
+                            Non_NA = c("NETHERLANDS", "POLAND","SCOTLAND", "IRELAND", "Germany", "ENGLAND", "GREECE", "ITALY","AUSTRALIA", "CUBA"))
+```
+
+```{r}
+#Separated by Lyme endemic states
+
+us_ticks$Lyme_endemicity <- fct_collapse(us_ticks$State,
+  Endemic = c("Connecticut", "Delaware", "Massachusetts", "Maryland", "Maine", "Minnesota", "New Hampshire", "New Jersey", "New York", "Pennsylvania", "Rhode Island", "Virginia", "Vermont", "Wisconsin"),
+  Nonendemic = c("Alaska", "Alabama", "Arkansas", "Arizona", "California", "Colorado", "District of Columbia", "Florida", "Georgia", "Hawaii", "Iowa", "Idaho", "Illinois", "Indiana", "Kansas", "Kentucky", "Louisiana", "Michigan", "Missouri", "Mississippi", "Montana", "North Carolina", "North Dakota", "Nebraska", "New Mexico", "Nevada", "Ohio", "Oklahoma", "Oregon", "South Carolina", "South Dakota", "Tennessee", "Texas", "Utah", "Washington", "Wyoming", "West Virginia"))
+```
+
+```{r, include=FALSE}
+#Establishing risk categories for bite risk analysis
+
+all_ticks$Bite_risk <- fct_collapse(all_ticks$Engorgement,
+                                Low = c("0", "1"),
+                                Moderate = c("1.5","2"),
+                                High = c("2.5", "3", "3.5", "4", "4.5", "5", "5.5", "6", "6.5", "7", "7.5", "8"))
+
+summary(all_ticks$Bite_risk)
+
+us_ticks$Bite_risk <-fct_collapse(us_ticks$Engorgement,
+                                Low = c("0", "1"),
+                                Moderate = c("1.5","2"),
+                                High = c("2.5", "3", "3.5", "4", "4.5", "5", "5.5", "6", "6.5", "7", "7.5", "8"))
+```
+
+```{r}
+#Descriptive Analysis of all submissions
+
+summary(all_ticks$Found_on)
+summary(all_ticks$State)
+summary(all_ticks$Corrected_Species_ID)
+summary(all_ticks$Season)
+summary(all_ticks$Region)
+summary(all_ticks$Lyme_endemicity)
+summary(all_ticks$Bite_risk)
+
+summary(us_ticks$Found_on)
+summary(us_ticks$State)
+summary(us_ticks$Corrected_Species_ID)
+summary(us_ticks$Season)
+summary(us_ticks$Region)
+summary(us_ticks$Lyme_endemicity)
+summary(us_ticks$Bite_risk)
+```
+
+```{r}
+#Tick Species
+library(ggthemes)
+library(patternplot)
+
+#Most common tick species and public ID accuracy
+top_ticks <- all_ticks %>%
+  drop_na(Corrected_Species_ID) %>%
+  filter(Corrected_Species_ID %in% c("American Dog tick (Dermacentor variabilis)", "Blacklegged or Deer tick (Ixodes scapularis)", "Lone Star tick (Amblyomma americanum)", "Western-Blacklegged tick (Ixodes pacificus)"))
+
+correct_id_by_species <-ggplot(data = top_ticks) +
+  aes(x = Corrected_Species_ID, fill = Customer_Correct) +
+  geom_bar() +
+  labs(x = 'Tick Species Encountered',
+    y = 'Number of Submissions') +
+  scale_fill_discrete(name = "Did user identify tick correctly?",
+labels = c("No", "Yes")) + 
+  theme_hc() +
+  coord_flip()
+correct_id_by_species
+
+ggsave("correct_id_species_barplot.png", plot = correct_id_by_species, device = NULL, path = NULL,scale = 1, width = 18, height = 7,dpi = 300, limitsize = TRUE)
+
+#Most commonly mistaken tick ID for four top tick species
+common_mistakes <-ggplot(data = top_ticks) +
+  aes(x = Corrected_Species_ID, fill = Public_ID) +
+  geom_bar() +
+  scale_fill_viridis_d(option = "D", aesthetics = "fill") +
+  labs(x = 'Tick Species Encountered',
+    y = 'Number of Submissions') +
+ theme(axis.text.x=element_text(angle = 45, hjust = 1)) +
+  scale_fill_discrete(name = "User-provided identifications of submitted specimens",
+labels = c("American dog tick (Dermacentor variabilis)", "Blacklegged tick (Ixodes scapularis)", "Brown dog tick (Rhipicephalus sanguineus)", "Cayenne tick (Amblyomma cajennense)", "Gulf Coast tick (Ambylomma maculatum)", "I don't know", "Lone star tick (Amblyomma americanum)", "Pacific Coast tick (Dermacentor occidentalis)", "Rocky Mountain Wood tick (Dermacentor andersoni)", "Western blacklegged tick (Ixodes pacificus")) +
+  theme_hc() 
+common_mistakes
+
+ggsave("common_mistakes_barplot.png", plot = common_mistakes, device = NULL, path = NULL,scale = 1, width = 20, height = 10,dpi = 300, limitsize = TRUE)
+
+```
+
+```{r}
+#Investigating the incorrect responses
+summary(common_mistakes$data)
+table(top_ticks$Corrected_Species_ID, top_ticks$Public_ID)
+table(top_ticks$Corrected_Species_ID, top_ticks$Customer_Correct)
+```
+
+```{r}
+#Establishing modeling dataset
+
+us_ticks_mod <- us_ticks %>%
+  dplyr::select(Customer_Correct, Corrected_Species_ID, Corrected_Stage_ID, State, Region, Season, Bite_risk, Host)
+
+#Recoding levels
+us_ticks_mod$Customer_Correct <- factor(us_ticks_mod$Customer_Correct)
+us_ticks_mod$State <-factor(us_ticks_mod$State)
+us_ticks_mod$Corrected_Stage_ID <- factor(us_ticks_mod$Corrected_Stage_ID, levels = c("Adult", "Nymph", "Larva"))
+us_ticks_mod$Season <-factor(us_ticks_mod$Season, levels = c("Spring", "Summer", "Fall", "Winter"))
+us_ticks_mod$Host <-factor(us_ticks$Host, levels = c("On a person", "On a pet", "Loose and wandering"))
+
+#Collapsing species levels due to small sample numbers in "other" category
+us_ticks_mod$Corrected_Species_ID <- fct_collapse(us_ticks_mod$Corrected_Species_ID,
+                            Ixodes_scapularis = c("Blacklegged or Deer tick (Ixodes scapularis)"),
+                            Dermacentor_variabilis = c("American Dog tick (Dermacentor variabilis)"),
+                            Amblyomma_americanum = c("Lone Star tick (Amblyomma americanum)"),
+                            Ixodes_pacificus = c("Western-Blacklegged tick (Ixodes pacificus)"),
+                            Dermacentor_andersoni = c("Rocky Mountain Wood tick (Dermacentor andersoni)",                               "Rocky Mountain Wood tick (Dermacentor andersoni)\r"),
+                            Amblyomma_maculatum = c("Gulf Coast tick (Amblyomma maculatum)"),
+                            Rhipicephalus_sanguineus = c("Brown Dog tick (Rhipicephalus sanguineus)"),
+                            Not_a_tick = c("Not a tick"),
+                            Dermacentor_occidentalis = c("Pacific Coast tick (Dermacentor occidentalis)"),
+                            Unknown = c("Unknown"),
+                            Other = c("Amblyomma mixtum", "Amblyomma spp.", "Ixodes spp.", "Bat tick (Carios kelleyi)", "Castor bean tick (Ixodes ricinus)", "Cayenne tick (Amblyomma cajennense)", "East Asian Longhorned tick (Haemaphysalis longicornis)", "Groundhog tick (Ixodes cookei)", "Hyalomma spp.", "Ixodes angustus", "Moose tick (Dermacentor albipictus)", "Ornate sheep tick (Dermacentor marginatus)", "Poultry tick (Argas persicus)", "Rabbit tick (Haemaphysalis leporispalustris)", "Raccoon tick (Ixodes texanus)", "Soft tick (Argasidae sp.)", "Spinose ear tick (Otobious megnini)", "Squirrel tick (Ixodes marxi)", "Winter tick (Dermacentor albipictus)", "Woodchuck tick (Ixodes cookei)"))
+
+#Randomizing test and training data sets
+ind<- sample(1:30693,1500, replace = FALSE) #randomizing 1500 datapoints
+
+train<-us_ticks_mod[ind,] #training dataset
+test<-us_ticks_mod[ind,] #testing dataset
+``` 
+
+```{r}
+library(glmnet)
+library(bestglm)
+library(AICcmodavg)
+##Logistic Regression Models to Understand How Different Variables are Correlated with the Ability for Public to Identify a Tick Correctly 
+
+#Single params
+mod_null <- glm(Customer_Correct ~., family = binomial(link = "logit"), data = train)
+mod_global <-glm(Customer_Correct ~ Corrected_Species_ID+Corrected_Stage_ID+State+Region+Bite_risk+Season
+                 +Host, family = binomial(link = "logit"), data = train)
+
+mod_1_Species<- glm(Customer_Correct ~ Corrected_Species_ID,family=binomial(link='logit'), data=train)
+mod_1_Stage<- glm(Customer_Correct ~ Corrected_Stage_ID,family=binomial(link='logit'), data=train)
+mod_1_State<- glm(Customer_Correct ~ State,family=binomial(link='logit'), data=train)
+mod_1_Region<- glm(Customer_Correct ~ Region,family=binomial(link='logit'), data=train)
+mod_1_Bite_risk<- glm(Customer_Correct ~ Bite_risk,family=binomial(link='logit'), data=train)
+mod_1_Host<- glm(Customer_Correct ~ Host,family=binomial(link='logit'),data=train)
+mod_1_Season <-glm(Customer_Correct ~ Season,family=binomial(link='logit'),data=train)
+
+single_mods_names <- c("Null", "Species", "Stage", "State", "Region", "Bite risk", "Host", "Season")
+AIC(mod_null, mod_1_Species, mod_1_Stage, mod_1_State, mod_1_Region, mod_1_Bite_risk, mod_1_Host)
+AICtab(mod_null, mod_1_Species, mod_1_Stage, mod_1_State, mod_1_Region, mod_1_Bite_risk, mod_1_Host)
+single_param_table <- bbmle::AICtab(mod_null, mod_1_Species, mod_1_Stage, mod_1_State, mod_1_Region, mod_1_Bite_risk, mod_1_Host, mod_1_Season, weights = TRUE, sort = TRUE, mnames = single_mods_names)
+single_param_table
+
+#Two params
+mod_2_Species_Stage<- glm(Customer_Correct ~ Corrected_Species_ID+Corrected_Stage_ID,family=binomial(link='logit'),data=train)
+mod_2_Species_State <- glm(Customer_Correct ~ Corrected_Species_ID+State,family=binomial(link='logit'),data=train)
+mod_2_Species_Region <- glm(Customer_Correct ~ Corrected_Species_ID+Region,family=binomial(link='logit'),data=train)
+mod_2_Species_Bite_Risk <- glm(Customer_Correct ~ Corrected_Species_ID+Bite_risk,family=binomial(link='logit'),data=train)
+mod_2_Species_Host <- glm(Customer_Correct ~ Corrected_Species_ID+Host,family=binomial(link='logit'),data=train)
+mod_2_Species_Season<-glm(Customer_Correct ~ Corrected_Species_ID+Season,family=binomial(link='logit'),data=train)
+mod_2_Stage_State <- glm(Customer_Correct ~ Corrected_Stage_ID+State,family=binomial(link='logit'),data=train)
+mod_2_Stage_Region <- glm(Customer_Correct ~ Corrected_Stage_ID+Region,family=binomial(link='logit'),data=train)
+mod_2_Stage_Bite_risk <- glm(Customer_Correct ~ Corrected_Stage_ID+Bite_risk,family=binomial(link='logit'),data=train)
+mod_2_Stage_Host <- glm(Customer_Correct ~ Corrected_Stage_ID+Host,family=binomial(link='logit'),data=train)
+mod_2_State_Region <- glm(Customer_Correct ~ State+Region,family=binomial(link='logit'),data=train)
+mod_2_State_Bite_risk <- glm(Customer_Correct ~ State+Bite_risk,family=binomial(link='logit'),data=train)
+mod_2_State_Host <- glm(Customer_Correct ~ State+Host,family=binomial(link='logit'),data=train)
+mod_2_Region_Bite_risk <- glm(Customer_Correct ~ Region+Bite_risk,family=binomial(link='logit'),data=train)
+mod_2_Region_Host <- glm(Customer_Correct ~ Region+Host,family=binomial(link='logit'),data=train)
+
+two_param_mod_names <-c("Species+Stage", "Species+State", "Species+Region", "Species+Bite Risk", "Species+Host", "Stage+State", "Stage+Region", "Stage+Bite Risk", "Stage+Host", "State+Region", "State+Bite Risk", "State+Host", "Region+Bite Risk", "Region+Host")
+
+AIC(mod_null,mod_global, mod_2_Species_Stage, mod_2_Species_State, mod_2_Species_Region, mod_2_Species_Bite_Risk, mod_2_Species_Host, mod_2_Stage_State, mod_2_Stage_Region, mod_2_Stage_Bite_risk, mod_2_Stage_Host, mod_2_State_Region, mod_2_State_Bite_risk, mod_2_State_Host, mod_2_Region_Bite_risk, mod_2_Region_Host)
+AICtab(mod_null,mod_global, mod_2_Species_Stage, mod_2_Species_State, mod_2_Species_Region, mod_2_Species_Bite_Risk, mod_2_Species_Host, mod_2_Stage_State, mod_2_Stage_Region, mod_2_Stage_Bite_risk, mod_2_Stage_Host, mod_2_State_Region, mod_2_State_Bite_risk, mod_2_State_Host, mod_2_Region_Bite_risk, mod_2_Region_Host)
+
+
+##Three params
+mod_3_Species_Stage_State <- glm(Customer_Correct ~ Corrected_Species_ID+Corrected_Stage_ID+State,family=binomial(link='logit'),data=train)
+mod_3_Species_Stage_Region <- glm(Customer_Correct ~ Corrected_Species_ID+Corrected_Stage_ID+Region,family=binomial(link='logit'),data=train)
+mod_3_Species_Stage_Bite_risk <- glm(Customer_Correct ~ Corrected_Species_ID+Corrected_Stage_ID+Bite_risk,family=binomial(link='logit'),data=train)
+mod_3_Species_Stage_Host <- glm(Customer_Correct ~ Corrected_Species_ID+Corrected_Stage_ID+Host,family=binomial(link='logit'),data=train)
+mod_3_Species_Stage_Season <- glm(Customer_Correct ~ Corrected_Species_ID+Corrected_Stage_ID+Season,family=binomial(link='logit'),data=train)
+mod_3_Species_State_Region <- glm(Customer_Correct ~ Corrected_Species_ID+State+Region,family=binomial(link='logit'),data=train)
+mod_3_Species_State_Bite_risk <- glm(Customer_Correct ~ Corrected_Species_ID+State+Bite_risk,family=binomial(link='logit'),data=train)
+mod_3_Species_State_Host <- glm(Customer_Correct ~ Corrected_Species_ID+State+Host,family=binomial(link='logit'),data=train)
+mod_3_Species_State_Season <- glm(Customer_Correct ~ Corrected_Species_ID+State+Season,family=binomial(link='logit'),data=train)
+mod_3_Species_Region_Bite_risk <- glm(Customer_Correct ~ Corrected_Species_ID+Region+Bite_risk,family=binomial(link='logit'),data=train)
+mod_3_Species_Region_Host <- glm(Customer_Correct ~ Corrected_Species_ID+Corrected_Stage_ID+State,family=binomial(link='logit'),data=train)
+mod_3_Species_Region_Season <- glm(Customer_Correct ~ Corrected_Species_ID+Region+Season,family=binomial(link='logit'),data=train)
+mod_3_Stage_State_Region <- glm(Customer_Correct ~ Corrected_Stage_ID+State+Region,family=binomial(link='logit'),data=train)
+mod_3_Stage_State_Bite_risk <- glm(Customer_Correct ~ Corrected_Stage_ID+State+Bite_risk, family=binomial(link='logit'),data=train)
+mod_3_Stage_State_Host <- glm(Customer_Correct ~ Corrected_Stage_ID+State+Host,family=binomial(link='logit'),data=train)
+mod_3_Stage_State_Season <- glm(Customer_Correct ~ Corrected_Stage_ID+State+Season,family=binomial(link='logit'),data=train)
+mod_3_State_Region_Bite_risk <- glm(Customer_Correct ~ State+Region+Bite_risk,family=binomial(link='logit'),data=train)
+mod_3_State_Region_Host <- glm(Customer_Correct ~ State+Region+Host,family=binomial(link='logit'),data=train)
+mod_3_State_Region_Season <- glm(Customer_Correct ~ State+Region+Season,family=binomial(link='logit'),data=train)
+mod_3_Region_Bite_risk_Host<- glm(Customer_Correct ~ Region+Bite_risk+Host,family=binomial(link='logit'),data=train)
+mod_3_Region_Bite_risk_Season <- glm(Customer_Correct ~ Region+Bite_risk+Season,family=binomial(link='logit'),data=train)
+mod_3_Bite_risk_Host_Season <- glm(Customer_Correct ~ Bite_risk+Host+Season,family=binomial(link='logit'),data=train)
+mod_3_Stage_Host_Bite_risk <- glm(Customer_Correct ~ Corrected_Stage_ID+Host+Bite_risk,family=binomial(link='logit'),data=train)
+
+AIC(mod_null, mod_global, mod_3_Bite_risk_Host_Season, mod_3_Region_Bite_risk_Host, mod_3_Region_Bite_risk_Season, mod_3_Species_Region_Bite_risk, mod_3_Species_Region_Host, mod_3_Species_Region_Season, mod_3_Species_Stage_Bite_risk, mod_3_Species_Stage_Host, mod_3_Species_Stage_Region, mod_3_Species_Stage_Season, mod_3_Species_Stage_State, mod_3_Species_State_Bite_risk, mod_3_Species_State_Host, mod_3_Species_State_Region, mod_3_Stage_State_Bite_risk, mod_3_Stage_State_Host, mod_3_Stage_State_Region, mod_3_Stage_State_Season, mod_3_State_Region_Bite_risk, mod_3_State_Region_Host, mod_3_State_Region_Season, mod_3_Stage_Host_Bite_risk)
+
+AICtab(mod_null, mod_global, mod_3_Bite_risk_Host_Season, mod_3_Region_Bite_risk_Host, mod_3_Region_Bite_risk_Season, mod_3_Species_Region_Bite_risk, mod_3_Species_Region_Host, mod_3_Species_Region_Season, mod_3_Species_Stage_Bite_risk, mod_3_Species_Stage_Host, mod_3_Species_Stage_Region, mod_3_Species_Stage_Season, mod_3_Species_Stage_State, mod_3_Species_State_Bite_risk, mod_3_Species_State_Host, mod_3_Species_State_Region, mod_3_Stage_State_Bite_risk, mod_3_Stage_State_Host, mod_3_Stage_State_Region, mod_3_Stage_State_Season, mod_3_State_Region_Bite_risk, mod_3_State_Region_Host, mod_3_State_Region_Season, mod_3_Stage_Host_Bite_risk)
+
+#Removing State 
+
+##Four param models
+mod_4_Sp.Stg.Sea.Bite <- glm(Customer_Correct ~ Corrected_Species_ID+Corrected_Stage_ID+Season+Bite_risk,family=binomial(link='logit'),data=train)
+
+mod_4_Sp.Stg.Reg.Bite <- glm(Customer_Correct ~ Corrected_Species_ID+Corrected_Stage_ID+Region+Bite_risk,family=binomial(link='logit'),data=train)
+
+mod_4_Stg.Reg.Host.Bite <- glm(Customer_Correct ~ Corrected_Stage_ID+Region+Host+Bite_risk,family=binomial(link='logit'),data=train)
+
+mod_4_Stg.Reg.Bite.Sea. <- glm(Customer_Correct ~ Corrected_Stage_ID+Region+Bite_risk+Season,family=binomial(link='logit'),data=train)
+
+mod_4_Sp.Stg.Host.Bite <- glm(Customer_Correct ~ Corrected_Species_ID+ Corrected_Stage_ID+Host+Bite_risk,family=binomial(link='logit'),data=train)
+
+
+#Five params
+mod_5_Sp.Stg.Reg.Sea.Host.Bite <-glm(Customer_Correct ~ Corrected_Species_ID+ Corrected_Stage_ID+Region+Season+Bite_risk,family=binomial(link='logit'),data=train)
+
+#Interactions in best models
+mod_int_Stg.Reg.Host.Bite <- glm(Customer_Correct ~ Corrected_Stage_ID+Region+Host*Bite_risk,family=binomial(link='logit'),data=train)
+
+mod_int_Sp.Stg.Host.Bite <-glm(Customer_Correct ~ Corrected_Species_ID+ Corrected_Stage_ID+Host*Bite_risk,family=binomial(link='logit'),data=train)
+
+mod_int_Sp.Stg.Host.Bite2 <-glm(Customer_Correct ~ Corrected_Species_ID+ Corrected_Stage_ID+Host:Bite_risk,family=binomial(link='logit'),data=train)
+
+mod_int_Sp.Stg.Host.Bite3 <-glm(Customer_Correct ~ Corrected_Species_ID* Corrected_Stage_ID+Host*Bite_risk,family=binomial(link='logit'),data=train)
+
+mod_int_Sp.Stg.Reg.Sea.Bite.Host <-glm(Customer_Correct ~ Corrected_Species_ID+ Corrected_Stage_ID+Region*Season+Host*Bite_risk,family=binomial(link='logit'),data=train)
+
+mod_int_Sp.Stg.Sea.Host.Bite <-glm(Customer_Correct ~ Corrected_Species_ID+ Corrected_Stage_ID+Season+Host*Bite_risk,family=binomial(link='logit'),data=train)
+
+mod_int_Sp.Stg.Sea.Host.Bite2 <-glm(Customer_Correct ~ Corrected_Species_ID+ Corrected_Stage_ID+Season+Host:Bite_risk,family=binomial(link='logit'),data=train)
+
+mod_int_Sp.Stg.Sea.Host.Bite3 <-glm(Customer_Correct ~ Corrected_Species_ID: Corrected_Stage_ID+Season+Host:Bite_risk,family=binomial(link='logit'),data=train)
+
+mod_int_Sp.Stg.Reg.Host.Bite <-glm(Customer_Correct ~ Corrected_Species_ID+ Corrected_Stage_ID+Region+Host*Bite_risk,family=binomial(link='logit'),data=train)
+
+mod_int_Stg_Host_Bite1 <-glm(Customer_Correct ~ Corrected_Stage_ID+Host*Bite_risk,family=binomial(link='logit'),data=train)
+
+mod_int_Stg_Host_Bite2 <-glm(Customer_Correct ~ Corrected_Stage_ID+(Host:Bite_risk),family=binomial(link='logit'),data=train)
+
+##Random effect to assess for variability in Regional submissions
+library(nlme)
+library(lme4)
+reff1 <- glmer(Customer_Correct ~ Corrected_Species_ID + Corrected_Stage_ID + Season + Host*Bite_risk + (1 | Region),
+             family = binomial, data = train)
+
+#Overall AIC with top models  
+AICtab(mod_null,mod_global, mod_1_Stage, mod_2_Stage_Region, mod_3_Species_Stage_Bite_risk, mod_4_Sp.Stg.Sea.Bite, mod_4_Sp.Stg.Reg.Bite, mod_4_Stg.Reg.Host.Bite, mod_4_Stg.Reg.Bite.Sea.,mod_4_Sp.Stg.Host.Bite, mod_5_Sp.Stg.Reg.Sea.Host.Bite, mod_int_Sp.Stg.Host.Bite, mod_int_Stg.Reg.Host.Bite, mod_int_Sp.Stg.Host.Bite2, mod_int_Sp.Stg.Host.Bite3, mod_int_Sp.Stg.Reg.Sea.Bite.Host, mod_int_Sp.Stg.Sea.Host.Bite, mod_int_Sp.Stg.Reg.Host.Bite, reff1, mod_int_Sp.Stg.Sea.Host.Bite2, mod_int_Sp.Stg.Sea.Host.Bite3, mod_3_Stage_Host_Bite_risk, mod_int_Stg_Host_Bite1,mod_int_Stg_Host_Bite2)  
+
+#Final Top models
+mod_4_Stg.Reg.Host.Bite           
+mod_3_Stage_Host_Bite_risk        
+mod_4_Sp.Stg.Host.Bite          
+mod_int_Sp.Stg.Sea.Host.Bite     
+mod_int_Stg.Reg.Host.Bite         
+
+AICtab(mod_4_Stg.Reg.Host.Bite,           
+mod_3_Stage_Host_Bite_risk,        
+mod_4_Sp.Stg.Host.Bite,            
+mod_int_Sp.Stg.Sea.Host.Bite,     
+mod_int_Stg.Reg.Host.Bite,
+mod_int_Stg_Host_Bite1,mod_int_Stg_Host_Bite2)
+
+#mod_4_Stg.Reg.Host.Bite ##TOP MODEL BY AIC
+summary(mod_4_Stg.Reg.Host.Bite) # display results
+confint(mod_4_Stg.Reg.Host.Bite) # 95% CI for the coefficients
+exp(coef(mod_4_Stg.Reg.Host.Bite)) # exponentiated coefficients
+exp(confint(mod_4_Stg.Reg.Host.Bite)) # 95% CI for exponentiated coefficients
+predict(mod_4_Stg.Reg.Host.Bite, type="response") # predicted values
+residuals(mod_4_Stg.Reg.Host.Bite, type="deviance") # residuals
+
+#mod_3_Stage_Host_Bite_risk         
+summary(mod_3_Stage_Host_Bite_risk) # display results
+confint(mod_3_Stage_Host_Bite_risk) # 95% CI for the coefficients
+exp(coef(mod_3_Stage_Host_Bite_risk)) # exponentiated coefficients
+exp(confint(mod_3_Stage_Host_Bite_risk)) # 95% CI for exponentiated coefficients
+predict(mod_3_Stage_Host_Bite_risk, type="response") # predicted values
+residuals(mod_3_Stage_Host_Bite_risk, type="deviance") # residuals
+
+#mod_4_Sp.Stg.Host.Bite 
+summary(mod_4_Sp.Stg.Host.Bite) # display results
+confint(mod_4_Sp.Stg.Host.Bite) # 95% CI for the coefficients
+exp(coef(mod_4_Sp.Stg.Host.Bite)) # exponentiated coefficients
+exp(confint(mod_4_Sp.Stg.Host.Bite)) # 95% CI for exponentiated coefficients
+predict(mod_4_Sp.Stg.Host.Bite, type="response") # predicted values
+residuals(mod_4_Sp.Stg.Host.Bite, type="deviance") # residuals
+
+#mod_int_Sp.Stg.Host.Bite
+summary(mod_int_Sp.Stg.Host.Bite) # display results
+confint(mod_int_Sp.Stg.Host.Bite) # 95% CI for the coefficients
+exp(coef(mod_int_Sp.Stg.Host.Bite)) # exponentiated coefficients
+exp(confint(mod_int_Sp.Stg.Host.Bite)) # 95% CI for exponentiated coefficients
+predict(mod_int_Sp.Stg.Host.Bite, type="response") # predicted values
+residuals(mod_int_Sp.Stg.Host.Bite, type="deviance") # residuals
+
+#mod_int_Stg.Reg.Host.Bite
+summary(mod_int_Stg.Reg.Host.Bite) # display results
+confint(mod_int_Stg.Reg.Host.Bite) # 95% CI for the coefficients
+exp(coef(mod_int_Stg.Reg.Host.Bite)) # exponentiated coefficients
+exp(confint(mod_int_Stg.Reg.Host.Bite)) # 95% CI for exponentiated coefficients
+predict(mod_int_Stg.Reg.Host.Bite, type="response") # predicted values
+residuals(mod_int_Stg.Reg.Host.Bite, type="deviance") # residuals
+
+```
+
+```{r}
+#Top model evaluation
+mod_4_Stg.Reg.Host.Bite           
+mod_3_Stage_Host_Bite_risk        
+mod_4_Sp.Stg.Host.Bite          
+mod_int_Sp.Stg.Sea.Host.Bite     
+mod_int_Stg.Reg.Host.Bite 
+
+#Variable Importance
+varImp(mod_4_Stg.Reg.Host.Bite , value="nsubsets")
+varImp(mod_3_Stage_Host_Bite_risk, value = "nsubsets")
+varImp(mod_4_Sp.Stg.Host.Bite, value="nsubsets")
+varImp(mod_int_Sp.Stg.Sea.Host.Bite, value="nsubsets")
+varImp(mod_int_Stg.Reg.Host.Bite, value="nsubsets")
+
+#McFadden's Pseudo R2 for correlation
+pR2(mod_4_Stg.Reg.Host.Bite)             
+pR2(mod_3_Stage_Host_Bite_risk)              
+pR2(mod_4_Sp.Stg.Host.Bite)       
+pR2(mod_int_Sp.Stg.Sea.Host.Bite)       
+pR2(mod_int_Stg.Reg.Host.Bite)
+
+  
+#Wald test for significance of individual predictors
+
+#mod_4_Stg.Reg.Host.Bite - All significant except for Region
+regTermTest(mod_4_Stg.Reg.Host.Bite, "Corrected_Stage_ID")
+regTermTest(mod_4_Stg.Reg.Host.Bite, "Region")
+regTermTest(mod_4_Stg.Reg.Host.Bite, "Host")
+regTermTest(mod_4_Stg.Reg.Host.Bite, "Bite_risk")
+
+#mod_3_Stage_Host_Bite_risk - All significant
+regTermTest(mod_3_Stage_Host_Bite_risk, "Corrected_Stage_ID")
+regTermTest(mod_3_Stage_Host_Bite_risk, "Host")
+regTermTest(mod_3_Stage_Host_Bite_risk, "Bite_risk")
+
+#mod_4_Sp.Stg.Host.Bite - All significant 
+regTermTest(mod_4_Sp.Stg.Host.Bite, "Corrected_Species_ID")
+regTermTest(mod_4_Sp.Stg.Host.Bite, "Corrected_Stage_ID")
+regTermTest(mod_4_Sp.Stg.Host.Bite, "Host")
+regTermTest(mod_4_Sp.Stg.Host.Bite, "Bite_risk")
+
+#mod_int_Sp.Stg.Sea.Host.Bite - Only Stage is significant
+regTermTest(mod_int_Sp.Stg.Sea.Host.Bite, "Corrected_Species_ID")
+regTermTest(mod_int_Sp.Stg.Sea.Host.Bite, "Corrected_Stage_ID")
+regTermTest(mod_int_Sp.Stg.Sea.Host.Bite, "Season")
+regTermTest(mod_int_Sp.Stg.Sea.Host.Bite, "Host")
+regTermTest(mod_int_Sp.Stg.Sea.Host.Bite, "Bite_risk")
+
+#mod_int_Stg.Reg.Host.Bite - Only Stage is significant
+regTermTest(mod_int_Stg.Reg.Host.Bite, "Corrected_Stage_ID")
+regTermTest(mod_int_Stg.Reg.Host.Bite, "Region")
+regTermTest(mod_int_Stg.Reg.Host.Bite, "Host")
+regTermTest(mod_int_Stg.Reg.Host.Bite, "Bite_risk")
+
+##Removing the two models with interaction from evaluation##
+
+#Hosmer and Lemeshow goodness of fit (GOF) test
+library(ResourceSelection)
+
+#mod_4_Stg.Reg.Host.Bite 
+for (i in 5:20) {
+	print(hoslem.test(mod_4_Stg.Reg.Host.Bite$y, fitted(mod_4_Stg.Reg.Host.Bite), g=i)$p.value)
+}
+
+#mod_3_Stage_Host_Bite_risk
+for (i in 4:20) {
+	print(hoslem.test(mod_3_Stage_Host_Bite_risk$y, fitted(mod_3_Stage_Host_Bite_risk), g=i)$p.value)
+}
+
+#mod_4_Sp.Stg.Host.Bite
+for (i in 5:20) {
+	print(hoslem.test(mod_4_Sp.Stg.Host.Bite$y, fitted(mod_4_Sp.Stg.Host.Bite), g=i)$p.value)
+}
+
+
+#Checking Hosmer Lemeshow goodness of fit through 1000 simulations
+
+pvalues <- array(0, 1000)
+#mod_4_Stg.Reg.Host.Bite
+for (i in 1:1000){
+	n <- 100
+	x <- rnorm(n)
+	xb <- x
+	pr <- exp(xb)/(1+exp(xb))
+	y <- 1*(runif(n) < pr)
+	pvalues[i] <- hoslem.test(mod_4_Stg.Reg.Host.Bite$y, fitted(mod_4_Stg.Reg.Host.Bite), g=10)$p.value
+}
+	mean(pvalues<=0.05)
+	
+#mod_3_Stage_Host_Bite_risk
+	for (i in 1:1000){
+	n <- 100
+	x <- rnorm(n)
+	xb <- x
+	pr <- exp(xb)/(1+exp(xb))
+	y <- 1*(runif(n) < pr)
+	pvalues[i] <- hoslem.test(mod_3_Stage_Host_Bite_risk$y, fitted(mod_3_Stage_Host_Bite_risk), g=10)$p.value
+}
+	mean(pvalues<=0.05)
+	
+#mod_4_Sp.Stg.Host.Bite
+for (i in 1:1000){
+	n <- 100
+	x <- rnorm(n)
+	xb <- x
+	pr <- exp(xb)/(1+exp(xb))
+	y <- 1*(runif(n) < pr)
+	pvalues[i] <- hoslem.test(mod_4_Sp.Stg.Host.Bite$y, fitted(mod_4_Sp.Stg.Host.Bite), g=10)$p.value
+}
+	mean(pvalues<=0.05)
+```
+
+```{r}
+#Fitting Predictive Model and Evaluating Model Performance on Test Dataset
+
+##Compare Train and Test Sets
+
+mod_4_Stg.Reg.Host.Bite_train <-glm(Customer_Correct ~ Corrected_Stage_ID+Region+Host+Bite_risk, family=binomial(link='logit'),data=train)
+mod_4_Stg.Reg.Host.Bite_test <-glm(Customer_Correct ~ Corrected_Stage_ID+Region+Host+Bite_risk, family=binomial(link='logit'),data=test)
+anova(mod_4_Stg.Reg.Host.Bite_train, mod_4_Stg.Reg.Host.Bite_test, test="Chisq")
+summary(mod_4_Stg.Reg.Host.Bite_test)
+
+mod_3_Stage_Host_Bite_risk_train <-glm(Customer_Correct ~ Corrected_Stage_ID+Host+Bite_risk, family=binomial(link='logit'),data=train)
+mod_3_Stage_Host_Bite_risk_test<-glm(Customer_Correct ~ Corrected_Stage_ID+Host+Bite_risk, family=binomial(link='logit'),data=test)
+summary(mod_3_Stage_Host_Bite_risk_test)
+anova(mod_3_Stage_Host_Bite_risk_train, mod_3_Stage_Host_Bite_risk_test, test="Chisq")
+
+mod_4_Sp.Stg.Host.Bite_train <-glm(Customer_Correct ~ Corrected_Species_ID+Corrected_Stage_ID+Host+Bite_risk, family=binomial(link='logit'),data=train)  
+mod_4_Sp.Stg.Host.Bite_test <- glm(Customer_Correct ~ Corrected_Species_ID+Corrected_Stage_ID+Host+Bite_risk, family=binomial(link='logit'),data=test)  
+summary(mod_4_Sp.Stg.Host.Bite_test)
+anova(mod_4_Sp.Stg.Host.Bite_train, mod_4_Sp.Stg.Host.Bite_test, test="Chisq")
+```
+
+```{r}
+#ROC curves 
+library(pROC)
+
+#mod_4_Stg.Reg.Host.Bite_test
+test_prob_1 = predict(mod_4_Stg.Reg.Host.Bite_test, newdata = test, type = "response")
+test_roc_1 = roc(test$Customer_Correct ~ test_prob_1, plot = TRUE, print.auc = TRUE)
+
+#mod_3_Stage_Host_Bite_risk_test
+test_prob_2 = predict(mod_3_Stage_Host_Bite_risk_test, newdata = test, type = "response")
+test_roc_2 = roc(test$Customer_Correct ~ test_prob_2, plot = TRUE, print.auc = TRUE)
+
+#mod_4_Sp.Stg.Host.Bite_test
+test_prob_3 = predict(mod_4_Sp.Stg.Host.Bite_test, newdata = test, type = "response")
+test_roc_3 = roc(test$Customer_Correct ~ test_prob_3, plot = TRUE, print.auc = TRUE)
+
+
+
+```
+
+```{r}
+library(texreg)
+#Model Display Table and Reporting for optimal model
+summary(mod_3_Stage_Host_Bite_risk_test)
+screenreg(list(mod_3_Stage_Host_Bite_risk_test))
+
+#Comparison to other models
+screenreg(list(mod_3_Stage_Host_Bite_risk_test, mod_4_Stg.Reg.Host.Bite_test, mod_4_Sp.Stg.Host.Bite_test), 
+dcolumn = TRUE, booktabs = TRUE, use.packages = FALSE, label = "tab:3", caption = "Comparison of top GLM models for public tick identification accuracy.", float.pos = "hb!")
+
+#Odds ratios from logit chart
+exp(coef(mod_3_Stage_Host_Bite_risk_test))
+exp(cbind(OR = coef(mod_3_Stage_Host_Bite_risk_test), confint.default(mod_3_Stage_Host_Bite_risk_test)))
+
+```
+
+
